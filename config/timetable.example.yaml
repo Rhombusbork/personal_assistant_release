@@ -1,0 +1,39 @@
+# 수업 시간표 (매주 반복) — 견본. bin/setup 이 config/timetable.yaml 로 복사한다 (내 파일은 git 에 안 올라감).
+# 학기 시작·끝 (학사일정 보고 바꾸기)
+semester_start: "2026-09-01"
+semester_end: "2026-12-21"
+
+# 대면 수업: day 는 mon tue wed thu fri sat sun
+classes:
+  - name: 예시과목
+    day: mon
+    start: "09:00"
+    end: "10:15"
+
+# 온라인 수업 (Canvas 과목명과 같게, 시간 고정 없음 → 정기 할 일로 관리)
+online_classes: []
+
+# 학습 계획 설정
+planner:
+  main_days: [mon, wed, fri, sat]   # 우선 배치 요일
+  fallback_days: [sun]              # 위 요일로 부족하면 사용
+  day_start: "09:00"
+  day_end: "23:00"
+  break_minutes: 10                 # 항목 사이 휴식
+  split_over: 120                   # 이보다 큰 일(분)은 나눠서 여러 날에
+  chunk_minutes: 90                 # 나눈 한 조각의 최대 길이
+  exam_review:                      # 제목에 "시험"·"고사"가 있는 할 일 → 시험 전 복습 블록
+    offsets: [7, 4, 2]              # 시험 며칠 전부터 (각 이틀 안에)
+    minutes: 60
+  horizon_days: 14                  # 이 기간 안에 마감인 항목만 계획
+  max_minutes_per_day: 240         # 하루 최대 학습 배치 시간
+  evening_review: "21:00"           # 이 시각 이후 대시보드에 '하루 마무리'
+  minutes:                          # 기본 예상 소요 시간 (항목별로 `pa.tasks time` 으로 조정)
+    lecture: 50
+    quiz: 20
+    assignment: 60
+
+# 휴대폰 알림 — 비서가 Google Calendar 일정에 붙이는 알림 (휴대폰 Google Calendar 앱이 알려 줌, PC 꺼져도 됨)
+reminders:
+  plan_minutes_before: 10           # '학습 계획' 블록 시작 몇 분 전 (0 이면 알림 없음)
+  deadline_minutes_before: [1440, 180, 60]   # '과제' 마감 하루 전 · 3시간 전 · 1시간 전 (최대 5개)

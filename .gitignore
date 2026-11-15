@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+build/
+
+# 환경/비밀 정보
+.env
+.env.*
+!.env.example
+*.key
+credentials*.json
+token*.json
+
+# 개인 데이터 (일정/건강 기록 등)
+data/
+*.db
+*.sqlite
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/tasks.json
+.idea/
+client_secret*.json
+
+# 개인 입력·생성 파일
+inbox.md
+TODAY.md
+dashboard/data.js
+.pytest_cache/
+
+# 내 설정 (견본은 config/*.example.* — bin/setup 이 복사)
+config/*.yaml
+!config/*.example.yaml
+config/profile.md
+
+# 작업용 추가자료 (사진·파일을 잠깐 두는 곳 — 끝나면 materials 로 옮기거나 지움)
+추가자료/

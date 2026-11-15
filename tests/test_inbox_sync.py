@@ -1,0 +1,161 @@
+"""inbox.md 섹션 동작: 체크, ## 완료, ## 제외, 줄 삭제."""
+import pytest
+
+from pa import db, inbox
+
+
+@pytest.fixture
+def conn(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "PATH", tmp_path / "pa.db")
+    monkeypatch.setattr(inbox, "PATH", tmp_path / "inbox.md")
+    c = db.connect()
+    db.sync_source(c, "canvas", [{"key": "a1", "kind": "assignment", "course": "생약학Ⅰ 676205",
+                                  "title": "조별학습활동 보고서 제출 게시판", "due": "2099-01-01T23:59:00+09:00",
+                                  "earliest": None, "minutes": 60, "url": ""}])
+    return c
+
+
+def write(body):
+    inbox.PATH.write_text(body, encoding="utf-8")
+
+
+def status(c, key):
+    return c.execute("SELECT status FROM tasks WHERE key = ?", (key,)).fetchone()["status"]
+
+
+def test_checkbox_done_and_reopen(conn):
+    write("## 할 일\n- [x] 보고서 @12-01\n")
+    inbox.sync(conn)
+    assert status(conn, "i:보고서") == "done"
+    write("## 할 일\n- [ ] 보고서 @12-01\n")
+    inbox.sync(conn)
+    assert status(conn, "i:보고서") == "open"
+
+
+def test_ignore_section_is_declarative(conn):
+    write("## 할 일\n## 제외\n- 생약학 조별학습활동\n")
+    assert inbox.sync(conn) == []
+    assert status(conn, "a1") == "ignored"
+    write("## 할 일\n## 제외\n")
+    inbox.sync(conn)
+    assert status(conn, "a1") == "open"
+
+
+def test_done_section_is_sticky(conn):
+    write("## 완료\n- a1\n")
+    inbox.sync(conn)
+    assert status(conn, "a1") == "done"
+    write("## 완료\n")
+    inbox.sync(conn)
+    assert status(conn, "a1") == "done"
+
+
+def test_removed_line_is_gone(conn):
+    write("## 할 일\n- [ ] 논문 읽기\n")
+    inbox.sync(conn)
+    write("## 할 일\n")
+    inbox.sync(conn)
+    assert status(conn, "i:논문 읽기") == "gone"
+
+
+def test_comments_ignored_and_warnings(conn):
+    write("<!--\n- [ ] 예시 @11-20\n-->\n## 할 일\n- [ ] 잘못 @13-40\n## 완료\n- 없는항목\n")
+    warns = inbox.sync(conn)
+    assert len(warns) == 2
+    assert conn.execute("SELECT COUNT(*) FROM tasks WHERE key = 'i:예시'").fetchone()[0] == 0
+
+
+def test_every_creates_dated_instances(conn):
+    write("## 할 일\n- [ ] 생화학 공부 ~1h 매주:월,화,수,목,금,토,일\n")
+    inbox.sync(conn)
+    n = conn.execute("SELECT COUNT(*) FROM tasks WHERE key LIKE 'i:생화학 공부@%'").fetchone()[0]
+    assert n >= 14
+
+
+def test_add_done_remove_roundtrip(conn):
+    from datetime import datetime
+    from pa.model import KST
+    write(inbox.TEMPLATE)
+    line = inbox.add_task(title="발표 #준비 @자료", due=datetime(2026, 11, 20, 18, 0, tzinfo=KST),
+                          minutes=90, course="린 스타트업", every=None)
+    assert line == "- [ ] 발표 ＃준비 ＠자료 @2026-11-20 18:00 ~90m #린_스타트업" or line == "- [ ] 발표 ＃준비 ＠자료 @11-20 18:00 ~90m #린_스타트업"
+    inbox.add_task(title="논문 읽기")
+    inbox.sync(conn)
+    assert status(conn, "i:발표 ＃준비 ＠자료") == "open"
+    inbox.mark_done("i:발표 ＃준비 ＠자료")
+    inbox.sync(conn)
+    assert status(conn, "i:발표 ＃준비 ＠자료") == "done"
+    inbox.mark_done("a1")
+    inbox.ignore("a1")  # 완료가 먼저 적용됐으므로 제외 칸은 '맞는 항목 없음' 경고
+    inbox.sync(conn)
+    assert status(conn, "a1") == "done"
+    inbox.remove("i:논문 읽기")
+    inbox.sync(conn)
+    assert status(conn, "i:논문 읽기") == "gone"
+
+
+def test_every_line_format():
+    assert inbox.format_line("생화학 공부", minutes=60, every=[3, 1]) == "- [ ] 생화학 공부 ~60m 매주:화,목"
+
+
+def test_exam_creates_review_blocks(conn):
+    write("## 할 일\n- [ ] 생화학 기말고사 @12-28 10:00 #생화학\n")  # 미래 날짜
+    inbox.sync(conn)
+    rows = conn.execute("SELECT key, earliest, due FROM tasks WHERE key LIKE 'i:생화학 기말고사@복습%' ORDER BY key").fetchall()
+    assert [r["key"][-3:] for r in rows] == ["복습1", "복습2", "복습3"]
+    assert all(r["earliest"] < r["due"] for r in rows)
+
+
+def test_set_due_turns_someday_into_today(conn):
+    from datetime import datetime
+    from pa.model import KST
+    write("## 할 일\n- [ ] 논문 읽기 ~45m #연구\n")
+    inbox.set_due("i:논문 읽기", datetime(2099, 1, 2, 23, 59, tzinfo=KST))
+    assert "- [ ] 논문 읽기 @2099-01-02 ~45m #연구" in inbox.PATH.read_text(encoding="utf-8")
+    inbox.sync(conn)
+    assert conn.execute("SELECT due FROM tasks WHERE key='i:논문 읽기'").fetchone()[0].startswith("2099-01-02T23:59")
+
+
+def test_ignore_like_covers_future_tasks_and_unignore(conn):
+    write(inbox.TEMPLATE)
+    text = inbox.ignore_like(conn, "a1")
+    assert text == "생약학Ⅰ 조별학습활동 보고서 제출 게시판"
+    inbox.sync(conn)
+    assert status(conn, "a1") == "ignored"
+    # 다음 주에 같은 이름의 새 과제가 생기면 그것도 제외
+    db.sync_source(conn, "canvas", [{"key": "a2", "kind": "assignment", "course": "생약학Ⅰ 676205",
+                                     "title": "조별학습활동 보고서 제출 게시판", "due": "2099-01-08T23:59:00+09:00",
+                                     "earliest": None, "minutes": 60, "url": ""}])
+    inbox.sync(conn)
+    assert status(conn, "a2") == "ignored"
+    ex = inbox.excluded(conn)
+    assert ex[0]["pattern"] and ex[0]["count"] == 2
+    inbox.unignore(text)
+    inbox.sync(conn)
+    assert status(conn, "a1") == "open" and status(conn, "a2") == "open"
+
+
+def test_unignore_single_key(conn):
+    write(inbox.TEMPLATE)
+    inbox.ignore("a1")
+    inbox.sync(conn)
+    assert status(conn, "a1") == "ignored" and inbox.excluded(conn)[0]["pattern"] is False
+    inbox.unignore("a1")
+    inbox.sync(conn)
+    assert status(conn, "a1") == "open"
+
+
+def test_undone_reopens(tmp_path, monkeypatch):
+    from pa import db, inbox
+    monkeypatch.setattr(db, "PATH", tmp_path / "pa.db")
+    monkeypatch.setattr(inbox, "PATH", tmp_path / "inbox.md")
+    inbox.PATH.write_text("## 할 일\n- [ ] 발표 @2099-01-01\n\n## 완료\n\n## 제외\n", encoding="utf-8")
+    conn = db.connect()
+    db.sync_source(conn, "canvas", [{"key": "a1", "kind": "assignment", "course": "", "title": "과제",
+                                     "due": "2099-01-01T23:59:00+09:00", "earliest": None, "minutes": 60, "url": ""}])
+    inbox.mark_done("a1"); inbox.mark_done("i:발표")
+    assert "- a1" in inbox.PATH.read_text(encoding="utf-8") and "[x] 발표" in inbox.PATH.read_text(encoding="utf-8")
+    inbox.undone(conn, "a1"); inbox.undone(conn, "i:발표")
+    text = inbox.PATH.read_text(encoding="utf-8")
+    assert "- a1" not in text and "[ ] 발표" in text
+    assert conn.execute("SELECT status FROM tasks WHERE key = 'a1'").fetchone()[0] == "open"
