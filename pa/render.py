@@ -1,7 +1,10 @@
 """출력 블록: TODAY.md (VSCode 미리보기용), dashboard/data.js (HTML 대시보드용)."""
 import json
+import os
+import uuid
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from pa import ai, calibrate, db, jobs, materials, quiz
 from pa.config import ROOT, load_timetable
@@ -23,6 +26,27 @@ def dday(due, t_now):
 def load_plan(conn):
     return [(r["key"], parse_dt(r["start"]), parse_dt(r["end"]), r["summary"])
             for r in conn.execute("SELECT * FROM plan ORDER BY start")]
+
+
+def _plain(summary):
+    return re.sub(r"^\[[^\]]+\]\s*", "", summary)  # '[과제] 생약학 · …' → '생약학 · …'
+
+
+def overlaps(conn, t_now=None):
+    """직접 정한 할 시간(계획 키 …#고정)이 수업·약속이나 다른 계획 블록과 겹치는 것.
+    {계획 키: ['물리약학 13:30–14:45', …]} — 막지 않고 알려만 준다 (일부러 겹치게 넣을 수도 있음)."""
+    t_now = t_now or now()
+    plan = [(k, s, e, summ) for k, s, e, summ in load_plan(conn) if e > t_now]
+    busy = [(parse_dt(r["start"]), parse_dt(r["end"]), r["label"]) for r in conn.execute("SELECT * FROM busy")]
+    out = {}
+    for k, s, e, _ in plan:
+        if not k.endswith("#고정"):
+            continue
+        hit = [f"{lab} {bs:%H:%M}–{be:%H:%M}" for bs, be, lab in busy if bs < e and s < be]
+        hit += [f"{_plain(summ2)} {s2:%H:%M}–{e2:%H:%M}" for k2, s2, e2, summ2 in plan if k2 != k and s2 < e and s < e2]
+        if hit:
+            out[k] = hit
+    return out
 
 
 def today_md(conn):
@@ -87,7 +111,7 @@ def today_md(conn):
     L.append("")
 
     # 기한 없는 할 일
-    someday = [t for t in tasks.values() if t.status == "open" and not t.due]
+    someday = [t for t in tasks.values() if t.status == "open" and not t.due and not (t.slot_end and t.slot_end > t_now)]
     if someday:
         L += ["## 📌 기한 없는 할 일", ""] + [f"- {label(t)}" for t in someday] + [""]
 
@@ -133,7 +157,8 @@ def dashboard_data(conn):
     def task_json(t):
         return {"key": t.key, "kind": t.kind, "course": short_course(t.course), "title": t.title,
                 "due": t.due.isoformat() if t.due else None, "status": t.status, "minutes": t.minutes,
-                "source": t.source, "url": t.url}
+                "source": t.source, "url": t.url,
+                "slot": [t.earliest.isoformat(), t.slot_end.isoformat()] if t.slot_end else None}
 
     upcoming = [task_json(t) for t in all_tasks
                 if t.status == "open" and t.due and t_now - timedelta(days=1) <= t.due <= t_now + timedelta(days=21)]
@@ -185,6 +210,10 @@ def dashboard_data(conn):
         warns.append(f"강의 플랫폼(LearningX) 로그인 필요: {lx}")
     elif lx:  # 시간 초과 같은 일시적 오류
         warns.append(f"강의 플랫폼 확인 중 일시적 오류 ({lx}) — 다음 확인 때 다시 시도합니다")
+    ov = overlaps(conn, t_now)
+    for k, hit in ov.items():
+        t = by_key.get(k.split("#")[0])
+        warns.append(f"할 시간이 겹쳐요: {t.title if t else k} ↔ {', '.join(hit)}")
     warns += [f"마감 전 빈 시간 부족: {label(by_key[k])}" for k in (db.get_meta(conn, "plan_failed") or "").split(",")
               if k in by_key]
     return {
@@ -193,7 +222,8 @@ def dashboard_data(conn):
         "tasks": upcoming, "plan": plan, "busy": busy, "warnings": warns,
         "progress": [{"course": c, **v} for c, v in sorted(progress.items())],
         "doneByDay": done_by_day,
-        "someday": [task_json(t) for t in all_tasks if t.status == "open" and not t.due],
+        "someday": [task_json(t) for t in all_tasks if t.status == "open" and not t.due and not (t.slot_end and t.slot_end > t_now)],
+        "slotted": [task_json(t) for t in all_tasks if t.status == "open" and not t.due and t.slot_end and t.slot_end > t_now],
         "plannedAt": db.get_meta(conn, "planned_at"),
         "courses": sorted({short_course(t.course) for t in all_tasks if t.course}),
         "active": active_json(conn, by_key),
@@ -204,6 +234,8 @@ def dashboard_data(conn):
         "exams": _exam_suggestions(conn),
         "grades": new_grades(conn),
         "redo": _redo(conn),
+        "defaults": defaults(conn),
+        "overlaps": ov,
         "weekReview": week_review(conn, t_now),
         "excluded": inbox_excluded(conn),
         "quiz": quiz.status(conn),
@@ -283,6 +315,30 @@ def semester_weeks(all_tasks, t_now):
                       "minutes": sum(t.minutes for t in all_tasks if t.due and d <= t.due.date() < nxt and t.status == "open")})
         d = nxt
     return weeks
+
+
+def defaults(conn):
+    """기본 할 일 [{id, title, kind: 'vscode'|'link', target}] — 급한 일이 없을 때 맨 위에 (대시보드에서 관리)."""
+    return json.loads(db.get_meta(conn, "default_tasks") or "[]")
+
+
+def set_defaults(conn, items):
+    """목록 전체를 저장 (순서 = 보이는 순서). 형식이 이상하면 ValueError."""
+    out = []
+    for it in items:
+        title, kind, target = str(it.get("title", "")).strip(), it.get("kind"), str(it.get("target", "")).strip()
+        if not title or kind not in ("vscode", "link") or not target:
+            raise ValueError("이름·종류·경로(링크)를 모두 넣어 주세요")
+        if kind == "link" and not re.match(r"https?://", target):
+            raise ValueError("링크는 http:// 또는 https:// 로 시작해야 합니다")
+        if kind == "vscode":
+            target = str(Path(os.path.expanduser(target)))
+            if not Path(target).is_dir():
+                raise ValueError(f"폴더가 없습니다: {target}")
+        out.append({"id": it.get("id") or uuid.uuid4().hex[:8], "title": title, "kind": kind, "target": target})
+    db.set_meta(conn, "default_tasks", json.dumps(out, ensure_ascii=False))
+    conn.commit()
+    return out
 
 
 def _redo(conn):

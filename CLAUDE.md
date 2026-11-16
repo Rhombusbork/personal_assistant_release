@@ -44,8 +44,8 @@
   대시보드 버튼 → 에이전트 작업(`pa/jobs.py` → `pa/ai.py`: `.env` 의 `PA_AI` 에 따라 `claude -p` 또는 `codex exec`). 엔진은 그 밖에는 AI 를 쓰지 않는다
 - LearningX(강의 플랫폼)는 `bin/pa browser login` 으로 저장한 로그인으로 **데이터 API 만** 읽는다.
   강의·자료 **페이지를 자동으로 열지 않는다** (열람·출석 기록이 남을 수 있음). 교수자가 지운 자료는 받지 않는다.
-  **비서가 스스로 다시 로그인하지 않는다** — 비서용 로그인이 평소 브라우저의 강의 콘텐츠 로그인을 끊은 일이 있음.
-  다시 로그인은 사용자가 대시보드 버튼이나 `bin/pa browser login` 을 직접 할 때만
+  로그인이 끊기면 `.env` 의 `PA_SCHOOL_ID`·`PA_SCHOOL_PW` 로 엔진이 안 보이는 브라우저에서 자동 로그인한다 (30분에 한 번까지,
+  2026-11-16 사용자가 정함 — 평소 브라우저의 강의 콘텐츠 로그인이 끊길 수 있음을 알고 고름). 계정이 없거나 실패하면 대시보드 버튼·`bin/pa browser login`
 
 ## 무엇을 어디서 (작업 지침)
 
@@ -66,6 +66,8 @@
 - 커밋·push 여부와 내 저장소는 `config/profile.md` 의 '내 저장소'를 따른다. 적혀 있지 않으면 커밋만 하고 push 는 묻는다.
 - 개인 파일(`config/*.yaml`, `config/profile.md`, `.env`, `data/` 등)은 git 에 넣지 않는다. 설정 견본(`*.example.*`)에는 개인 정보를 넣지 않는다.
 - `gh-pages`(휴대폰 화면)·`phone-inbox`(휴대폰 입력) 브랜치는 엔진(`pa/mobile.py`)이 관리한다. 손으로 고치지 않는다.
+- 친구용 배포(`personal_assistant_release`, Windows·WSL·리눅스 공용)는 `bin/release`. 기능을 바꿀 때마다 `docs/release.md` 의 점검 목록
+  (개인 정보·견본 설정·OS 공통·Python 3.10·DB 자동 수정·테스트)을 지키고, 배포 뒤 그 문서의 '배포 기록'에 한 줄 남긴다.
 
 ## 원칙
 
